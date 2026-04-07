@@ -1,4 +1,9 @@
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "./lib/supabase";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const USER_ID = "rafa";
 
 const CLUSTERS = [
   {
@@ -60,7 +65,88 @@ const DEFAULT_SETTINGS = {
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-// ── CSS ──────────────────────────────────────────────────────────────────────
+// ── Supabase helpers ──────────────────────────────────────────────────────────
+
+async function loadPromptsFromDB() {
+  const { data, error } = await supabase
+    .from("ps_prompts")
+    .select("*")
+    .eq("is_active", true)
+    .order("cluster")
+    .order("weight", { ascending: false });
+
+  if (error || !data || data.length === 0) return null;
+
+  // Map DB rows to app prompt shape
+  return data.map(row => ({
+    id: row.id,
+    clusterId: row.cluster,
+    weight: row.weight,
+    active: row.is_active,
+    text: row.prompt_text,
+    source: row.source,
+  }));
+}
+
+async function loadSettingsFromDB() {
+  const { data, error } = await supabase
+    .from("ps_profiles")
+    .select("*")
+    .eq("user_id", USER_ID)
+    .single();
+
+  if (error || !data) return null;
+
+  const ws = data.wake_schedule || {};
+  return {
+    nudgeTimes: ws.nudgeTimes || DEFAULT_SETTINGS.nudgeTimes,
+    checkInDay: ws.checkInDay || DEFAULT_SETTINGS.checkInDay,
+    checkInTime: ws.checkInTime || DEFAULT_SETTINGS.checkInTime,
+    syncTime: ws.syncTime || DEFAULT_SETTINGS.syncTime,
+  };
+}
+
+async function savePromptsToDB(prompts) {
+  // Only update weight and is_active for existing prompts
+  const updates = prompts.map(p =>
+    supabase
+      .from("ps_prompts")
+      .update({
+        weight: p.weight,
+        is_active: p.active,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", p.id)
+  );
+  await Promise.all(updates);
+}
+
+async function saveSettingsToDB(settings) {
+  const { data } = await supabase
+    .from("ps_profiles")
+    .select("id")
+    .eq("user_id", USER_ID)
+    .single();
+
+  const payload = {
+    user_id: USER_ID,
+    wake_schedule: settings,
+    prompt_interval_minutes: 90,
+    vibration_intensity: 2,
+    display_contrast: 2,
+    onboarding_complete: true,
+    shadow_clusters: [],
+    updated_at: new Date().toISOString(),
+  };
+
+  if (data) {
+    await supabase.from("ps_profiles").update(payload).eq("user_id", USER_ID);
+  } else {
+    await supabase.from("ps_profiles").insert(payload);
+  }
+}
+
+// ── CSS ───────────────────────────────────────────────────────────────────────
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;1,400&family=DM+Mono:wght@300;400&display=swap');
 
@@ -93,13 +179,8 @@ const css = `
     -webkit-font-smoothing: antialiased;
   }
 
-  .app {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
+  .app { min-height: 100vh; display: flex; flex-direction: column; }
 
-  /* ── header ── */
   .header {
     border-bottom: 1px solid var(--rule-strong);
     padding: 1.5rem 2rem 1.25rem;
@@ -152,10 +233,8 @@ const css = `
   .nav-btn:hover { background: var(--paper-warm); color: var(--ink); }
   .nav-btn.active { background: var(--ink); color: var(--paper); }
 
-  /* ── main layout ── */
   .main { flex: 1; padding: 2rem; max-width: 900px; width: 100%; margin: 0 auto; }
 
-  /* ── section title ── */
   .section-eyebrow {
     font-size: 10px;
     letter-spacing: 0.14em;
@@ -180,7 +259,6 @@ const css = `
     line-height: 1.7;
   }
 
-  /* ── cluster block ── */
   .cluster-block { margin-bottom: 2.5rem; }
   .cluster-header {
     display: flex;
@@ -191,15 +269,9 @@ const css = `
     border-bottom: 1px solid var(--rule);
   }
   .cluster-pip { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-  .cluster-name {
-    font-family: var(--serif);
-    font-size: 15px;
-    font-weight: 500;
-    color: var(--ink);
-  }
+  .cluster-name { font-family: var(--serif); font-size: 15px; font-weight: 500; color: var(--ink); }
   .cluster-sub-text { font-size: 11px; color: var(--ink-muted); line-height: 1.5; margin-bottom: 0.75rem; padding-left: 18px; }
 
-  /* ── prompt row ── */
   .prompt-row {
     display: flex;
     align-items: flex-start;
@@ -242,7 +314,6 @@ const css = `
   }
   .weight-pip.filled { background: var(--ink-mid); border-color: var(--ink-mid); }
 
-  /* ── settings ── */
   .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
   @media (max-width: 600px) { .settings-grid { grid-template-columns: 1fr; } }
 
@@ -308,7 +379,6 @@ const css = `
   .nudge-add:hover { background: var(--paper-deep); color: var(--ink); }
   .nudge-none { font-size: 11px; color: var(--ink-faint); font-style: italic; padding: 4px 0; }
 
-  /* ── check-in ── */
   .checkin-container { max-width: 640px; }
   .checkin-intro {
     background: var(--paper-warm);
@@ -322,11 +392,7 @@ const css = `
 
   .messages { display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.5rem; min-height: 200px; }
 
-  .msg {
-    display: flex;
-    gap: 10px;
-    animation: fadeUp 0.3s ease;
-  }
+  .msg { display: flex; gap: 10px; animation: fadeUp 0.3s ease; }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
   .msg-avatar {
@@ -414,16 +480,9 @@ const css = `
     padding: 1.25rem;
     margin-top: 1rem;
   }
-  .checkin-done-title {
-    font-family: var(--serif);
-    font-size: 16px;
-    font-style: italic;
-    color: var(--ink);
-    margin-bottom: 0.5rem;
-  }
+  .checkin-done-title { font-family: var(--serif); font-size: 16px; font-style: italic; color: var(--ink); margin-bottom: 0.5rem; }
   .checkin-done-text { font-size: 12px; color: var(--ink-muted); line-height: 1.7; }
 
-  /* ── save bar ── */
   .save-bar {
     position: fixed;
     bottom: 0; left: 0; right: 0;
@@ -452,8 +511,8 @@ const css = `
     transition: opacity 0.15s;
   }
   .save-btn:hover { opacity: 0.85; }
+  .save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  /* ── device preview ── */
   .preview-wrap {
     background: var(--paper-warm);
     border: 1px solid var(--rule-strong);
@@ -461,13 +520,7 @@ const css = `
     padding: 1.5rem;
     margin-bottom: 2rem;
   }
-  .preview-label {
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
-    margin-bottom: 1rem;
-  }
+  .preview-label { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 1rem; }
   .eink-frame {
     background: #e8e4db;
     border: 2px solid #c8c2b8;
@@ -496,7 +549,6 @@ const css = `
   }
   .preview-btn:hover { background: var(--paper-deep); color: var(--ink); }
 
-  /* ── status dots ── */
   .status-row { display: flex; gap: 1.5rem; margin-bottom: 2rem; flex-wrap: wrap; }
   .status-item { display: flex; align-items: center; gap: 6px; }
   .status-dot { width: 7px; height: 7px; border-radius: 50%; }
@@ -504,20 +556,20 @@ const css = `
   .status-dot.amber { background: #c8a96e; }
   .status-text { font-size: 11px; color: var(--ink-muted); }
 
+  .loading-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .loading-text { font-size: 11px; color: var(--ink-faint); letter-spacing: 0.1em; text-transform: uppercase; }
+
   hr.rule { border: none; border-top: 1px solid var(--rule); margin: 2rem 0; }
 `;
 
-// ── HELPERS ──────────────────────────────────────────────────────────────────
-function loadData() {
-  try {
-    const p = localStorage.getItem("ps_prompts");
-    const s = localStorage.getItem("ps_settings");
-    return {
-      prompts: p ? JSON.parse(p) : DEFAULT_PROMPTS,
-      settings: s ? JSON.parse(s) : DEFAULT_SETTINGS,
-    };
-  } catch { return { prompts: DEFAULT_PROMPTS, settings: DEFAULT_SETTINGS }; }
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getRandomPrompt(prompts) {
   const active = prompts.filter(p => p.active);
@@ -528,11 +580,12 @@ function getRandomPrompt(prompts) {
 
 function getCluster(id) { return CLUSTERS.find(c => c.id === id); }
 
-// ── CHECKIN AI ───────────────────────────────────────────────────────────────
-async function callClaude(messages) {
-  const systemPrompt = `You are the Pocket Shadow check-in guide — a direct, warm, non-performative presence helping Rafa do weekly shadow work. 
+// ── Check-in AI ───────────────────────────────────────────────────────────────
 
-Context about Rafa: ENTJ-leaning. Shadow pattern: Control → Impatience → Withdrawal → Overcorrection into logic. Core trigger: lack of control over unresolvable outcomes. His body signal is a tightening in the upper left chest before thoughts form. At his best he feels solar plexus warmth, time slowing, and clarity about what comes next. His hardest thing to say: "I need space / I need my own thing."
+async function callClaude(messages) {
+  const systemPrompt = `You are the Pocket Shadow check-in guide — a direct, warm, non-performative presence helping Rafa do weekly shadow work.
+
+Context about Rafa: ENTJ-leaning. Shadow pattern: Control -> Impatience -> Withdrawal -> Overcorrection into logic. Core trigger: lack of control over unresolvable outcomes. His body signal is a tightening in the upper left chest before thoughts form. At his best he feels solar plexus warmth, time slowing, and clarity about what comes next. His hardest thing to say: "I need space / I need my own thing."
 
 Your role in this check-in:
 - Ask 3-4 focused questions across the conversation, one or two at a time
@@ -557,7 +610,7 @@ Your role in this check-in:
   return data.content?.[0]?.text || "Something went wrong. Try again.";
 }
 
-// ── COMPONENTS ───────────────────────────────────────────────────────────────
+// ── Components ────────────────────────────────────────────────────────────────
 
 function WeightPips({ value, onChange }) {
   return (
@@ -577,9 +630,14 @@ function WeightPips({ value, onChange }) {
 }
 
 function PromptsTab({ prompts, setPrompts, setDirty }) {
-  const [previewIdx, setPreviewIdx] = useState(0);
+  const [, setPreviewIdx] = useState(0);
+  const [previewPrompt, setPreviewPrompt] = useState(() => getRandomPrompt(prompts));
 
-  const previewPrompt = getRandomPrompt(prompts);
+  function nextPreview() {
+    setPreviewIdx(i => i + 1);
+    setPreviewPrompt(getRandomPrompt(prompts));
+  }
+
   const previewCluster = getCluster(previewPrompt.clusterId);
 
   function togglePrompt(id) {
@@ -612,7 +670,7 @@ function PromptsTab({ prompts, setPrompts, setDirty }) {
           </div>
         </div>
         <div className="preview-controls">
-          <button className="preview-btn" onClick={() => setPreviewIdx(i => i + 1)}>next prompt</button>
+          <button className="preview-btn" onClick={nextPreview}>next prompt</button>
         </div>
       </div>
 
@@ -654,12 +712,8 @@ function SettingsTab({ settings, setSettings, setDirty }) {
     times[idx] = val;
     update("nudgeTimes", times);
   }
-  function addNudge() {
-    update("nudgeTimes", [...settings.nudgeTimes, "12:00"]);
-  }
-  function removeNudge(idx) {
-    update("nudgeTimes", settings.nudgeTimes.filter((_, i) => i !== idx));
-  }
+  function addNudge() { update("nudgeTimes", [...settings.nudgeTimes, "12:00"]); }
+  function removeNudge(idx) { update("nudgeTimes", settings.nudgeTimes.filter((_, i) => i !== idx)); }
 
   return (
     <div>
@@ -687,20 +741,15 @@ function SettingsTab({ settings, setSettings, setDirty }) {
           <p className="settings-card-title">Daily nudge times</p>
           <div className="field-row">
             <label className="field-label">
-              {settings.nudgeTimes.length === 0 ? "No nudges scheduled" : `${settings.nudgeTimes.length} nudge${settings.nudgeTimes.length === 1 ? "" : "s"} per day`}
+              {settings.nudgeTimes.length === 0
+                ? "No nudges scheduled"
+                : `${settings.nudgeTimes.length} nudge${settings.nudgeTimes.length === 1 ? "" : "s"} per day`}
             </label>
             <div className="nudge-times">
-              {settings.nudgeTimes.length === 0 && (
-                <span className="nudge-none">Device will not vibrate</span>
-              )}
+              {settings.nudgeTimes.length === 0 && <span className="nudge-none">Device will not vibrate</span>}
               {settings.nudgeTimes.map((t, i) => (
                 <div key={i} className="nudge-time-row">
-                  <input
-                    type="time"
-                    className="field-input"
-                    value={t}
-                    onChange={e => updateNudge(i, e.target.value)}
-                  />
+                  <input type="time" className="field-input" value={t} onChange={e => updateNudge(i, e.target.value)} />
                   <button className="nudge-remove" onClick={() => removeNudge(i)} title="Remove">×</button>
                 </div>
               ))}
@@ -739,7 +788,6 @@ function SettingsTab({ settings, setSettings, setDirty }) {
           <p className="settings-card-title">About</p>
           <div style={{ fontSize: 12, color: "var(--ink-muted)", lineHeight: 1.7 }}>
             <div>Firmware: v0.1.0</div>
-            <div>Prompts: 15 active</div>
             <div>Clusters: 5</div>
             <div style={{ marginTop: 8 }}>ESP32 + 2.13" e-ink</div>
             <div>LiPo 1000mAh</div>
@@ -750,13 +798,12 @@ function SettingsTab({ settings, setSettings, setDirty }) {
   );
 }
 
-function CheckInTab({ prompts, setPrompts, setDirty }) {
+function CheckInTab({ prompts }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
   const [started, setStarted] = useState(false);
-  const [synthesis, setSynthesis] = useState("");
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -783,9 +830,19 @@ function CheckInTab({ prompts, setPrompts, setDirty }) {
     const isComplete = reply.includes("[CHECK-IN COMPLETE]");
     const cleanReply = reply.replace("[CHECK-IN COMPLETE]", "").trim();
     setMessages(prev => [...prev, { role: "assistant", content: cleanReply }]);
+
     if (isComplete) {
       setDone(true);
-      setSynthesis(cleanReply);
+      // Log the completed check-in to Supabase
+      await supabase.from("ps_checkins").insert({
+        user_id: USER_ID,
+        prompt_text: cleanReply,
+        cluster: "reference",
+        acknowledged: true,
+        acknowledged_at: new Date().toISOString(),
+        reflection_text: newMessages.filter(m => m.role === "user").map(m => m.content).join(" | "),
+        reflection_at: new Date().toISOString(),
+      });
     }
     setLoading(false);
   }
@@ -803,11 +860,7 @@ function CheckInTab({ prompts, setPrompts, setDirty }) {
       {!started ? (
         <div className="checkin-intro">
           <p>This takes about five minutes. You'll be asked a few focused questions about the week. At the end, your prompt weights will be adjusted based on what came up.</p>
-          <button
-            className="save-btn"
-            style={{ marginTop: "1rem", display: "inline-block" }}
-            onClick={startCheckin}
-          >
+          <button className="save-btn" style={{ marginTop: "1rem", display: "inline-block" }} onClick={startCheckin}>
             Begin check-in
           </button>
         </div>
@@ -829,9 +882,7 @@ function CheckInTab({ prompts, setPrompts, setDirty }) {
                 <div className="msg-avatar ai">ps</div>
                 <div className="msg-bubble ai">
                   <div className="typing-indicator">
-                    <div className="typing-dot" />
-                    <div className="typing-dot" />
-                    <div className="typing-dot" />
+                    <div className="typing-dot" /><div className="typing-dot" /><div className="typing-dot" />
                   </div>
                 </div>
               </div>
@@ -849,9 +900,7 @@ function CheckInTab({ prompts, setPrompts, setDirty }) {
                 placeholder="Type your response..."
                 rows={1}
               />
-              <button className="send-btn" onClick={send} disabled={loading || !input.trim()}>
-                Send
-              </button>
+              <button className="send-btn" onClick={send} disabled={loading || !input.trim()}>Send</button>
             </div>
           )}
 
@@ -867,17 +916,51 @@ function CheckInTab({ prompts, setPrompts, setDirty }) {
   );
 }
 
-// ── APP ───────────────────────────────────────────────────────────────────────
+// ── App ───────────────────────────────────────────────────────────────────────
+
 export default function App() {
   const [tab, setTab] = useState("prompts");
-  const [prompts, setPrompts] = useState(() => loadData().prompts);
-  const [settings, setSettings] = useState(() => loadData().settings);
+  const [prompts, setPrompts] = useState(DEFAULT_PROMPTS);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [dirty, setDirty] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  function save() {
-    localStorage.setItem("ps_prompts", JSON.stringify(prompts));
-    localStorage.setItem("ps_settings", JSON.stringify(settings));
+  // Load from Supabase on mount
+  useEffect(() => {
+    async function init() {
+      const [dbPrompts, dbSettings] = await Promise.all([
+        loadPromptsFromDB(),
+        loadSettingsFromDB(),
+      ]);
+      if (dbPrompts) setPrompts(dbPrompts);
+      if (dbSettings) setSettings(dbSettings);
+      setLoading(false);
+    }
+    init();
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    await Promise.all([
+      savePromptsToDB(prompts),
+      saveSettingsToDB(settings),
+    ]);
+    setSaving(false);
     setDirty(false);
+  }
+
+  if (loading) {
+    return (
+      <>
+        <style>{css}</style>
+        <div className="app">
+          <div className="loading-screen">
+            <div className="loading-text">Loading...</div>
+          </div>
+        </div>
+      </>
+    );
   }
 
   return (
@@ -898,13 +981,15 @@ export default function App() {
 
         <main className="main">
           {tab === "prompts" && <PromptsTab prompts={prompts} setPrompts={setPrompts} setDirty={setDirty} />}
-          {tab === "checkin" && <CheckInTab prompts={prompts} setPrompts={setPrompts} setDirty={setDirty} />}
+          {tab === "checkin" && <CheckInTab prompts={prompts} />}
           {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettings} setDirty={setDirty} />}
         </main>
 
         <div className={`save-bar ${dirty ? "visible" : ""}`}>
-          <span className="save-bar-text">Unsaved changes</span>
-          <button className="save-btn" onClick={save}>Save changes</button>
+          <span className="save-bar-text">{saving ? "Saving..." : "Unsaved changes"}</span>
+          <button className="save-btn" onClick={save} disabled={saving}>
+            {saving ? "Saving..." : "Save changes"}
+          </button>
         </div>
       </div>
     </>
